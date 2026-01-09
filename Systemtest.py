@@ -14602,6 +14602,12 @@ def run_synthesis_verification_suite(
     tasks_succeeded = 0
     first_solve_time = None
 
+    def _coerce_float(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
     def default_tasks() -> List[Dict[str, Any]]:
         return [
             {
@@ -14615,6 +14621,30 @@ def run_synthesis_verification_suite(
             {
                 "name": "square",
                 "io_pairs": [{"input": i, "output": i * i} for i in range(5)],
+            },
+            {
+                "name": "list_reverse",
+                "io_pairs": [
+                    {"input": [1, 2, 3], "output": [3, 2, 1]},
+                    {"input": [4, 5], "output": [5, 4]},
+                    {"input": [], "output": []},
+                ],
+            },
+            {
+                "name": "string_reverse",
+                "io_pairs": [
+                    {"input": "abc", "output": "cba"},
+                    {"input": "hello", "output": "olleh"},
+                    {"input": "", "output": ""},
+                ],
+            },
+            {
+                "name": "list_to_string_concat",
+                "io_pairs": [
+                    {"input": ["a", "b", "c"], "output": "abc"},
+                    {"input": ["hi", "!", "?"], "output": "hi!?"},
+                    {"input": [], "output": ""},
+                ],
             },
         ]
 
@@ -14644,8 +14674,8 @@ def run_synthesis_verification_suite(
                 "task_size": float(len(io_pairs)),
                 "train_size": float(len(io_pairs)),
                 "holdout_size": 0.0,
-                "base_k": float(io_pairs[0]["input"]) if io_pairs else 0.0,
-                "base_v": float(io_pairs[0]["output"]) if io_pairs else 0.0,
+                "base_k": _coerce_float(io_pairs[0]["input"]) if io_pairs else 0.0,
+                "base_v": _coerce_float(io_pairs[0]["output"]) if io_pairs else 0.0,
             }
 
             print(f"[Synthesis] Task {task['name']} ({len(io_pairs)} pairs)")
@@ -14672,7 +14702,7 @@ def run_synthesis_verification_suite(
                 print(f"[Synthesis] Error on {task['name']}: {e}")
     finally:
         elapsed_seconds = time.time() - start_time
-        latent_priors_detected = setup.synthesizer.latent_priors_detected if hasattr(setup, 'synthesizer') else False
+        latent_priors_detected = getattr(setup.synthesizer, "latent_priors_detected", False)
         summary = {
             "timeout": timeout,
             "latent_priors_detected": latent_priors_detected,
