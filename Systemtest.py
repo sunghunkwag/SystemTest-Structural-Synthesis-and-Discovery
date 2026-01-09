@@ -52,6 +52,9 @@ try:
 except ImportError as e:
     HAS_SYNTHESIS_PACKAGE = False
     print(f"[Systemtest] [INFO] Using inline synthesis (modular package not found: {e})")
+    class BezalelSynthesizer:
+        def synthesize(self, io_examples: List[Dict[str, Any]], timeout: float = 5) -> List[Tuple[str, Any, int, int]]:
+            return []
 
 # ==========================================
 
@@ -13839,8 +13842,93 @@ class HRMSidecar:
 
                 return [(final_code, (ast_obj, k, v))]
 
-# ... (omitted text preserved by tool) ...
+def run_synthesis_verification_suite(
+    quick: bool = False,
+    max_seconds: Optional[float] = None,
+    tasks: Optional[Iterable[str]] = None,
+    guided: bool = False,
+    seed: Optional[int] = None,
+) -> Dict[str, Any]:
+    tools = ToolRegistry()
+    setup = HRMSidecar(tools, quick=quick, guided=guided)
+    if seed is not None:
+        random.seed(seed)
+        if np is not None:
+            np.random.seed(seed)
+    start_time = time.time()
+    timeout = False
+    tasks_attempted = 0
+    tasks_succeeded = 0
+    first_solve_time = None
 
+    def default_tasks() -> List[Dict[str, Any]]:
+        return [
+            {
+                "name": "increment",
+                "io_pairs": [{"input": i, "output": i + 1} for i in range(5)],
+            },
+            {
+                "name": "double",
+                "io_pairs": [{"input": i, "output": i * 2} for i in range(5)],
+            },
+            {
+                "name": "square",
+                "io_pairs": [{"input": i, "output": i * i} for i in range(5)],
+            },
+        ]
+
+    selected_tasks = default_tasks()
+    if tasks:
+        desired = {t.strip() for t in tasks if t and t.strip()}
+        selected_tasks = [t for t in selected_tasks if t["name"] in desired]
+        missing = sorted(desired.difference({t["name"] for t in selected_tasks}))
+        if missing:
+            print(f"[Synthesis] Unknown task names skipped: {', '.join(missing)}")
+
+    if not selected_tasks:
+        print("[Synthesis] No tasks selected; skipping run.")
+
+    deadline = start_time + max_seconds if max_seconds is not None else None
+
+    try:
+        for idx, task in enumerate(selected_tasks):
+            if deadline and time.time() > deadline:
+                timeout = True
+                print("[Synthesis] Timeout reached before task start.")
+                break
+
+            io_pairs = task["io_pairs"]
+            task_params = {
+                "task_index": float(idx),
+                "task_size": float(len(io_pairs)),
+                "train_size": float(len(io_pairs)),
+                "holdout_size": 0.0,
+                "base_k": float(io_pairs[0]["input"]) if io_pairs else 0.0,
+                "base_v": float(io_pairs[0]["output"]) if io_pairs else 0.0,
+            }
+
+            print(f"[Synthesis] Task {task['name']} ({len(io_pairs)} pairs)")
+            tasks_attempted += 1
+            try:
+                results = setup.synthesizer.synthesize(
+                    io_pairs,
+                    deadline=deadline,
+                    task_id=task["name"],
+                    task_params=task_params,
+                )
+                if results:
+                    tasks_succeeded += 1
+                    if first_solve_time is None:
+                        first_solve_time = time.time() - start_time
+                    print(f"[Synthesis] ✅ solved {task['name']}")
+                else:
+                    print(f"[Synthesis] ⚠️ no solution for {task['name']}")
+            except TimeoutError:
+                timeout = True
+                print(f"[Synthesis] Timeout while solving {task['name']}")
+                break
+            except Exception as e:
+                print(f"[Synthesis] Error on {task['name']}: {e}")
     finally:
         elapsed_seconds = time.time() - start_time
         latent_priors_detected = setup.synthesizer.latent_priors_detected if hasattr(setup, 'synthesizer') else False
