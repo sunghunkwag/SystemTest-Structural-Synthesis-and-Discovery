@@ -14015,7 +14015,7 @@ class BottomUpSynthesizer:
                 
                 # === 창발적 접근: 주입된 템플릿이 즉시 해결책인지 확인 ===
                 if sig_tuple == target_sig:
-                    print(f"      [즉시 해결!] RelationAnalyzer 템플릿이 해결책: {expr}")
+                    print(f"      [Immediate Solution!] RelationAnalyzer template solves: {expr}")
                     
                     if self.navigator:
                         self.navigator.learn(active_io, self._extract_atoms(expr), success=True)
@@ -14607,7 +14607,7 @@ class SingularityMonitor:
 def run_hrm_life():
     """INFINITE HRM LIFE LOOP - 4 Cognitive Capabilities + RSI"""
     print("\n" + "=" * 70)
-    print("  SINGULARITY LOOP - 인과추론 | 물리직관 | 자기상태 | 메타인지")
+    print("  SINGULARITY LOOP - causal reasoning | physical intuition | self-state | metacognition")
     print("  Ctrl+C to stop.")
     print("=" * 70)
     
