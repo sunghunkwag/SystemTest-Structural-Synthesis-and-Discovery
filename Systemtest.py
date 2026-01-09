@@ -11849,6 +11849,21 @@ class BSRecCall(BSExpr):
     arg: BSExpr
     def __repr__(self): return f"Rec({self.arg})"
 
+@dataclass(frozen=True)
+class BSLambda(BSExpr):
+    arity: int
+    body: BSExpr
+    def __repr__(self):
+        return f"(lam{self.arity} {self.body})"
+
+@dataclass(frozen=True)
+class BSPrimCall(BSExpr):
+    name: str
+    args: List[BSExpr]
+    def __repr__(self):
+        args_str = ", ".join(str(a) for a in self.args)
+        return f"{self.name}({args_str})"
+
 class BSConverter:
     """Bridge between Synthesizer (BSExpr) and Library Learning (HrmExpr)"""
     
@@ -11862,10 +11877,23 @@ class BSConverter:
             # (+ A B) -> ((+ A) B)
             op = HrmPrim(expr.op)
             return HrmApp(HrmApp(op, BSConverter.to_hrm(expr.left)), BSConverter.to_hrm(expr.right))
-            
+
         if isinstance(expr, BSRecCall):
             return HrmApp(HrmPrim("Rec"), BSConverter.to_hrm(expr.arg))
-            
+
+        if isinstance(expr, BSLambda):
+            body = BSConverter.to_hrm(expr.body)
+            for _ in range(expr.arity):
+                body = HrmLam(body)
+            return body
+
+        if isinstance(expr, BSPrimCall):
+            head = HrmPrim(expr.name)
+            curr = head
+            for arg in expr.args:
+                curr = HrmApp(curr, BSConverter.to_hrm(arg))
+            return curr
+
         if isinstance(expr, BSCustomOp):
             # (Op A B) -> ((Op A) B)
             head = HrmPrim(expr.name)
@@ -11879,6 +11907,9 @@ class BSConverter:
     def from_hrm(expr: HrmExpr) -> BSExpr:
         # Helper to unroll app
         head, args = BSConverter._unroll(expr)
+
+        if isinstance(head, HrmLam):
+            return BSLambda(1, BSConverter.from_hrm(head.body))
         
         if isinstance(head, HrmPrim):
             name = head.name
@@ -11896,7 +11927,10 @@ class BSConverter:
             # Const
             if name.isdigit() or (name.startswith('-') and name[1:].isdigit()):
                 return BSVal(int(name))
-                
+
+            if name == "Rec" and len(args) == 1:
+                return BSRecCall(BSConverter.from_hrm(args[0]))
+
             # Custom Op or Unknown
             # Assume CustomOp if it looks like one (Op...)
             if name.startswith("Op"):
@@ -11916,6 +11950,10 @@ class BSConverter:
                 # We might need a context or just leave it placeholder for now
                 # and let GrammarMutator fill it.
                 return BSCustomOp(name, BSVal(0), bs_args) # Definition placeholder
+
+            # Primitive Call fallback
+            if args:
+                return BSPrimCall(name, [BSConverter.from_hrm(a) for a in args])
                 
         if isinstance(head, HrmVar):
             return BSArg(head.i)
@@ -11931,19 +11969,301 @@ class BSConverter:
             curr = curr.f
         return curr, list(reversed(args))
 
+
+# ===========================
+# Type System (BSExpr)
+# ===========================
+
+@dataclass(frozen=True)
+class BSType:
+    pass
+
+@dataclass(frozen=True)
+class TypeInt(BSType):
+    def __repr__(self): return "Int"
+
+@dataclass(frozen=True)
+class TypeList(BSType):
+    elem: BSType
+    def __repr__(self): return f"List[{self.elem}]"
+
+@dataclass(frozen=True)
+class TypeFunc(BSType):
+    args: Tuple[BSType, ...]
+    ret: BSType
+    def __repr__(self):
+        arg_str = " -> ".join(str(a) for a in self.args)
+        return f"({arg_str}) -> {self.ret}"
+
+@dataclass(frozen=True)
+class TypeVar(BSType):
+    name: str
+    uid: int
+    def __repr__(self): return f"{self.name}{self.uid}"
+
+class TypeEnv:
+    def __init__(self, arg_types: Optional[List[BSType]] = None, var_types: Optional[Dict[str, BSType]] = None):
+        self.arg_types = arg_types or []
+        self.var_types = var_types or {}
+
+class PrimitiveRegistry:
+    def __init__(self) -> None:
+        self._registry: Dict[str, BSType] = {}
+
+    def register(self, name: str, signature: BSType) -> None:
+        self._registry[name] = signature
+
+    def get(self, name: str) -> Optional[BSType]:
+        return self._registry.get(name)
+
+    @staticmethod
+    def default() -> "PrimitiveRegistry":
+        reg = PrimitiveRegistry()
+        int_t = TypeInt()
+        reg.register("+", TypeFunc((int_t, int_t), int_t))
+        reg.register("-", TypeFunc((int_t, int_t), int_t))
+        reg.register("*", TypeFunc((int_t, int_t), int_t))
+        a = TypeVar("a", 0)
+        b = TypeVar("b", 0)
+        reg.register("cons", TypeFunc((a, TypeList(a)), TypeList(a)))
+        reg.register("head", TypeFunc((TypeList(a),), a))
+        reg.register("tail", TypeFunc((TypeList(a),), TypeList(a)))
+        reg.register("map", TypeFunc((TypeFunc((a,), b), TypeList(a)), TypeList(b)))
+        reg.register("fold", TypeFunc((TypeFunc((a, b), a), a, TypeList(b)), a))
+        return reg
+
+class TypeInferer:
+    def __init__(self, primitives: PrimitiveRegistry, meta_state: Optional["MetaState"] = None) -> None:
+        self.primitives = primitives
+        self.meta_state = meta_state
+        self._next_uid = 1
+
+    def _fresh(self, name: str = "t") -> TypeVar:
+        tv = TypeVar(name, self._next_uid)
+        self._next_uid += 1
+        return tv
+
+    def _freshen(self, t: BSType, mapping: Optional[Dict[TypeVar, TypeVar]] = None) -> BSType:
+        if mapping is None:
+            mapping = {}
+        if isinstance(t, TypeVar):
+            if t not in mapping:
+                mapping[t] = self._fresh(t.name)
+            return mapping[t]
+        if isinstance(t, TypeList):
+            return TypeList(self._freshen(t.elem, mapping))
+        if isinstance(t, TypeFunc):
+            return TypeFunc(tuple(self._freshen(a, mapping) for a in t.args), self._freshen(t.ret, mapping))
+        return t
+
+    def _apply(self, t: BSType, subs: Dict[TypeVar, BSType]) -> BSType:
+        if isinstance(t, TypeVar) and t in subs:
+            return self._apply(subs[t], subs)
+        if isinstance(t, TypeList):
+            return TypeList(self._apply(t.elem, subs))
+        if isinstance(t, TypeFunc):
+            return TypeFunc(tuple(self._apply(a, subs) for a in t.args), self._apply(t.ret, subs))
+        return t
+
+    def _occurs(self, tv: TypeVar, t: BSType, subs: Dict[TypeVar, BSType]) -> bool:
+        t = self._apply(t, subs)
+        if t == tv:
+            return True
+        if isinstance(t, TypeList):
+            return self._occurs(tv, t.elem, subs)
+        if isinstance(t, TypeFunc):
+            return any(self._occurs(tv, a, subs) for a in t.args) or self._occurs(tv, t.ret, subs)
+        return False
+
+    def _unify(self, a: BSType, b: BSType, subs: Dict[TypeVar, BSType]) -> None:
+        a = self._apply(a, subs)
+        b = self._apply(b, subs)
+        if isinstance(a, TypeVar):
+            if a != b:
+                if self._occurs(a, b, subs):
+                    raise TypeError(f"Occurs check failed: {a} in {b}")
+                subs[a] = b
+            return
+        if isinstance(b, TypeVar):
+            self._unify(b, a, subs)
+            return
+        if type(a) != type(b):
+            raise TypeError(f"Type mismatch: {a} vs {b}")
+        if isinstance(a, TypeInt):
+            return
+        if isinstance(a, TypeList):
+            self._unify(a.elem, b.elem, subs)
+            return
+        if isinstance(a, TypeFunc):
+            if len(a.args) != len(b.args):
+                raise TypeError(f"Arity mismatch: {a} vs {b}")
+            for ta, tb in zip(a.args, b.args):
+                self._unify(ta, tb, subs)
+            self._unify(a.ret, b.ret, subs)
+            return
+        raise TypeError(f"Unsupported type: {a}")
+
+    def infer(self, expr: BSExpr, env: Optional[TypeEnv] = None) -> BSType:
+        env = env or TypeEnv()
+        subs: Dict[TypeVar, BSType] = {}
+
+        def infer_inner(node: BSExpr, local_env: TypeEnv) -> BSType:
+            if isinstance(node, BSVal):
+                if isinstance(node.val, list):
+                    if not node.val:
+                        return TypeList(self._fresh("a"))
+                    elem_type = None
+                    for item in node.val:
+                        item_type = infer_inner(BSVal(item), local_env)
+                        if elem_type is None:
+                            elem_type = item_type
+                        else:
+                            self._unify(elem_type, item_type, subs)
+                    return TypeList(self._apply(elem_type, subs)) if elem_type else TypeList(self._fresh("a"))
+                return TypeInt()
+            if isinstance(node, BSVar):
+                return local_env.var_types.get(node.name, TypeInt())
+            if isinstance(node, BSArg):
+                if node.index >= len(local_env.arg_types):
+                    raise TypeError(f"Unknown argument index: {node.index}")
+                return local_env.arg_types[node.index]
+            if isinstance(node, BSLambda):
+                arg_types = [self._fresh("a") for _ in range(node.arity)]
+                inner_env = TypeEnv(arg_types=arg_types, var_types=local_env.var_types)
+                body_type = infer_inner(node.body, inner_env)
+                return TypeFunc(tuple(self._apply(t, subs) for t in arg_types), self._apply(body_type, subs))
+            if isinstance(node, BSBinOp):
+                if node.op in {"+", "-", "*"}:
+                    left_t = infer_inner(node.left, local_env)
+                    right_t = infer_inner(node.right, local_env)
+                    self._unify(left_t, TypeInt(), subs)
+                    self._unify(right_t, TypeInt(), subs)
+                    return TypeInt()
+                raise TypeError(f"Unknown binary op: {node.op}")
+            if isinstance(node, BSRecCall):
+                arg_t = infer_inner(node.arg, local_env)
+                self._unify(arg_t, TypeInt(), subs)
+                return TypeInt()
+            if isinstance(node, BSPrimCall):
+                prim = self.primitives.get(node.name)
+                if prim is None:
+                    raise TypeError(f"Unknown primitive: {node.name}")
+                prim = self._freshen(prim)
+                if isinstance(prim, TypeFunc):
+                    if len(node.args) != len(prim.args):
+                        raise TypeError(f"Arity mismatch for {node.name}: expected {len(prim.args)}")
+                    for arg_expr, arg_type in zip(node.args, prim.args):
+                        inferred = infer_inner(arg_expr, local_env)
+                        self._unify(inferred, arg_type, subs)
+                    return self._apply(prim.ret, subs)
+                raise TypeError(f"Primitive {node.name} is not callable")
+            if isinstance(node, BSCustomOp):
+                if self.meta_state:
+                    signature = self.meta_state.abstraction_types.get(node.name)
+                    if signature:
+                        prim = self._freshen(signature)
+                        if isinstance(prim, TypeFunc):
+                            if len(node.args) != len(prim.args):
+                                raise TypeError(f"Arity mismatch for {node.name}: expected {len(prim.args)}")
+                            for arg_expr, arg_type in zip(node.args, prim.args):
+                                inferred = infer_inner(arg_expr, local_env)
+                                self._unify(inferred, arg_type, subs)
+                            return self._apply(prim.ret, subs)
+                if node.args:
+                    raise TypeError(f"Unknown custom op type for {node.name}")
+                return infer_inner(node.definition, local_env)
+            raise TypeError(f"Unknown expression: {node}")
+
+        inferred = infer_inner(expr, env)
+        return self._apply(inferred, subs)
+
+def infer_bs_expr_type(expr: BSExpr, meta_state: Optional["MetaState"] = None, env: Optional[TypeEnv] = None) -> BSType:
+    primitives = meta_state.primitive_registry if meta_state else PrimitiveRegistry.default()
+    inferer = TypeInferer(primitives, meta_state=meta_state)
+    return inferer.infer(expr, env)
+
+@dataclass
+class BSAbstractionResult:
+    body: BSExpr
+    arity: int
+
+def bs_expr_complexity(expr: BSExpr) -> int:
+    if isinstance(expr, BSBinOp):
+        return 1 + bs_expr_complexity(expr.left) + bs_expr_complexity(expr.right)
+    if isinstance(expr, BSRecCall):
+        return 1 + bs_expr_complexity(expr.arg)
+    if isinstance(expr, BSCustomOp):
+        return 1 + sum(bs_expr_complexity(a) for a in expr.args) + bs_expr_complexity(expr.definition)
+    if isinstance(expr, BSPrimCall):
+        return 1 + sum(bs_expr_complexity(a) for a in expr.args)
+    if isinstance(expr, BSLambda):
+        return 1 + bs_expr_complexity(expr.body)
+    return 1
+
+def anti_unify_bs_expr(e1: BSExpr, e2: BSExpr) -> Optional[BSAbstractionResult]:
+    next_var = 0
+    holes: Dict[Tuple[str, str], int] = {}
+
+    def walk(a: BSExpr, b: BSExpr) -> BSExpr:
+        nonlocal next_var
+        if type(a) == type(b):
+            if isinstance(a, BSVal) and a.val == b.val:
+                return a
+            if isinstance(a, BSVar) and a.name == b.name:
+                return a
+            if isinstance(a, BSArg) and a.index == b.index:
+                return a
+            if isinstance(a, BSBinOp) and a.op == b.op:
+                return BSBinOp(a.op, walk(a.left, b.left), walk(a.right, b.right))
+            if isinstance(a, BSRecCall):
+                return BSRecCall(walk(a.arg, b.arg))
+            if isinstance(a, BSPrimCall) and a.name == b.name and len(a.args) == len(b.args):
+                return BSPrimCall(a.name, [walk(x, y) for x, y in zip(a.args, b.args)])
+            if isinstance(a, BSLambda) and a.arity == b.arity:
+                return BSLambda(a.arity, walk(a.body, b.body))
+            if isinstance(a, BSCustomOp) and a.name == b.name and len(a.args) == len(b.args):
+                args = [walk(x, y) for x, y in zip(a.args, b.args)]
+                definition = walk(a.definition, b.definition)
+                return BSCustomOp(a.name, definition, args)
+
+        key = (str(a), str(b))
+        if key in holes:
+            return BSArg(holes[key])
+        holes[key] = next_var
+        next_var += 1
+        return BSArg(holes[key])
+
+    body = walk(e1, e2)
+    if isinstance(body, BSArg):
+        return None
+    return BSAbstractionResult(body=body, arity=next_var)
+
 # Meta-Hypothesis Systems
 class MetaState:
     """Holds the current evolutionary state of the hypothesis generator."""
     def __init__(self):
         # Initial primitive set
-        self.atom_map = ["+", "-", "*", "Rec", "Arg", "Const"]
+        self.atom_map = ["+", "-", "*", "Rec", "Arg", "Const", "cons", "head", "tail", "map", "fold"]
         self.abstractions = {} # Name -> BSExpr (e.g., 'Dec' -> (- n 1))
+        self.abstraction_types: Dict[str, BSType] = {}
+        self.primitive_registry = PrimitiveRegistry.default()
         self.grammar_version = 0
 
     def add_abstraction(self, name: str, expr: 'BSExpr'):
         if name not in self.abstractions:
             self.abstractions[name] = expr
             self.atom_map.append(name)
+            try:
+                arity = self._expr_arity(expr)
+                arg_types = [TypeVar("a", idx + 1) for idx in range(arity)]
+                inferred = infer_bs_expr_type(expr, meta_state=self, env=TypeEnv(arg_types=arg_types))
+                signature = TypeFunc(tuple(arg_types), inferred) if arity else inferred
+                self.abstraction_types[name] = signature
+                if isinstance(signature, BSType):
+                    self.primitive_registry.register(name, signature)
+                print(f"[MetaState] Inferred type for '{name}': {signature}")
+            except Exception as exc:
+                print(f"[MetaState] Type inference failed for '{name}': {exc}")
             self.grammar_version += 1
             print(f"[MetaState] Evolved Grammar v{self.grammar_version}: Added operator '{name}'")
 
@@ -11967,6 +12287,27 @@ class MetaState:
                 stack.extend(curr.args)
         return max_idx + 1
 
+    def _expr_arity(self, expr: BSExpr) -> int:
+        max_idx = -1
+        stack = [expr]
+        while stack:
+            curr = stack.pop()
+            if isinstance(curr, BSArg):
+                max_idx = max(max_idx, curr.index)
+            elif isinstance(curr, BSBinOp):
+                stack.append(curr.left)
+                stack.append(curr.right)
+            elif isinstance(curr, BSRecCall):
+                stack.append(curr.arg)
+            elif isinstance(curr, BSCustomOp):
+                stack.append(curr.definition)
+                stack.extend(curr.args)
+            elif isinstance(curr, BSPrimCall):
+                stack.extend(curr.args)
+            elif isinstance(curr, BSLambda):
+                stack.append(curr.body)
+        return max_idx + 1
+
 class GrammarMutator:
     """Proposes mutations to the DSL (Meta-Hypothesis Generation) using Stitch."""
     def __init__(self, meta_state: MetaState):
@@ -11982,6 +12323,13 @@ class GrammarMutator:
     def propose_mutation(self) -> Optional[Tuple[str, BSExpr]]:
         # Only propose after accumulating enough data
         if len(self.history) < 5: return None
+
+        # Anti-Unification based abstraction discovery (common subtree)
+        anti_candidate = self._discover_common_subtree(self.history[-20:])
+        if anti_candidate:
+            name, expr, arity = anti_candidate
+            print(f"[GrammarMutator] Anti-Unify Abstraction: {name} = {expr} (Arity {arity})")
+            return (name, expr)
         
         # Convert history to HRM
         hrm_progs = []
@@ -12021,6 +12369,29 @@ class GrammarMutator:
             return (name, def_expr)
             
         return None
+
+    def _discover_common_subtree(self, programs: List[BSExpr]) -> Optional[Tuple[str, BSExpr, int]]:
+        if len(programs) < 2:
+            return None
+        best_candidate: Optional[BSAbstractionResult] = None
+        for i in range(len(programs)):
+            for j in range(i + 1, len(programs)):
+                candidate = anti_unify_bs_expr(programs[i], programs[j])
+                if not candidate:
+                    continue
+                if bs_expr_complexity(candidate.body) <= 2:
+                    continue
+                best_candidate = candidate
+                break
+            if best_candidate:
+                break
+        if not best_candidate:
+            return None
+        for existing in self.meta_state.abstractions.values():
+            if str(existing) == str(best_candidate.body):
+                return None
+        name = f"Op{len(self.meta_state.abstractions)}"
+        return (name, best_candidate.body, best_candidate.arity)
 
 # Self-Critic: Adversarial Data Generator
 class SelfCritic:
@@ -12117,6 +12488,13 @@ class SelfCritic:
 class SafeInterpreter:
     def __init__(self, limit=5000):
         self.limit = limit
+
+    def _apply_function(self, func_expr: BSExpr, args: List[Any], n: int, k: int, v: int, ctx: Dict[str, int], root_body: BSExpr, local_args: List[int]) -> Any:
+        if isinstance(func_expr, BSLambda):
+            return self._execute(func_expr.body, n, k, v, ctx, root_body, args)
+        if isinstance(func_expr, BSCustomOp):
+            return self._execute(func_expr.definition, n, k, v, ctx, root_body, args)
+        return 0
     
     def run_recursive(self, body_ast: BSExpr, n: int, k: int, v: int) -> int:
         if n <= k: return v
@@ -12144,6 +12522,9 @@ class SafeInterpreter:
             if curr_expr.index < len(local_args):
                 return local_args[curr_expr.index]
             return 0 # Safety bounds
+
+        if isinstance(curr_expr, BSLambda):
+            return curr_expr
             
         if isinstance(curr_expr, BSBinOp):
             l = self._execute(curr_expr.left, n, k, v, ctx, root_body, local_args)
@@ -12187,6 +12568,40 @@ class SafeInterpreter:
             # For now, let's keep 'n' as the root context (lexical-ish).
             # But local_args matches the new scope.
             return self._execute(curr_expr.definition, n, k, v, ctx, root_body, arg_vals)
+
+        if isinstance(curr_expr, BSPrimCall):
+            name = curr_expr.name
+            if name == "cons" and len(curr_expr.args) == 2:
+                head_val = self._execute(curr_expr.args[0], n, k, v, ctx, root_body, local_args)
+                tail_val = self._execute(curr_expr.args[1], n, k, v, ctx, root_body, local_args)
+                if not isinstance(tail_val, list):
+                    tail_val = []
+                return [head_val] + list(tail_val)
+            if name == "head" and len(curr_expr.args) == 1:
+                list_val = self._execute(curr_expr.args[0], n, k, v, ctx, root_body, local_args)
+                if isinstance(list_val, list) and list_val:
+                    return list_val[0]
+                return 0
+            if name == "tail" and len(curr_expr.args) == 1:
+                list_val = self._execute(curr_expr.args[0], n, k, v, ctx, root_body, local_args)
+                if isinstance(list_val, list) and list_val:
+                    return list_val[1:]
+                return []
+            if name == "map" and len(curr_expr.args) == 2:
+                func_expr = curr_expr.args[0]
+                list_val = self._execute(curr_expr.args[1], n, k, v, ctx, root_body, local_args)
+                if not isinstance(list_val, list):
+                    return []
+                return [self._apply_function(func_expr, [item], n, k, v, ctx, root_body, local_args) for item in list_val]
+            if name == "fold" and len(curr_expr.args) == 3:
+                func_expr = curr_expr.args[0]
+                acc = self._execute(curr_expr.args[1], n, k, v, ctx, root_body, local_args)
+                list_val = self._execute(curr_expr.args[2], n, k, v, ctx, root_body, local_args)
+                if not isinstance(list_val, list):
+                    return acc
+                for item in list_val:
+                    acc = self._apply_function(func_expr, [acc, item], n, k, v, ctx, root_body, local_args)
+                return acc
 
         return 0
 
