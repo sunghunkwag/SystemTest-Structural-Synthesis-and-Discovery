@@ -37,7 +37,12 @@ try:
 except ImportError:
     np = None
 
-from neuro_genetic_synthesizer import NeuroGeneticSynthesizer, NeuroInterpreter
+try:
+    from neuro_genetic_synthesizer import NeuroGeneticSynthesizer, NeuroInterpreter
+except ImportError:
+    NeuroGeneticSynthesizer = None
+    NeuroInterpreter = None
+    print("[Systemtest] Warning: NeuroGeneticSynthesizer module not found. Skipping RSI features.")
 
 # ==============================================================================
 # Modular Synthesis Package Integration
@@ -2459,8 +2464,7 @@ def main():
     else:
         parser.print_help()
 
-# if __name__ == "__main__":
-    main()
+# [DELETED ROGUE MAIN]
 
 # END OF omega_forge_two_stage_feedback.py
 
@@ -8846,8 +8850,7 @@ def main():
     args = parser.parse_args()
     return args.fn(args)
 
-# if __name__ == "__main__":
-    raise SystemExit(main())
+# [DELETED ROGUE MAIN]
 
 # END OF unified_rsi_extended.py
 
@@ -11602,8 +11605,7 @@ def main() -> None:
         print(it)
 
 
-# if __name__ == "__main__":
-    main()
+# [DELETED ROGUE MAIN]
 
 # END OF NON_RSI_AGI_CORE_v5.py
 
@@ -14088,6 +14090,7 @@ def run_hrm_life():
     if os.path.exists(state_path):
         try:
             with open(state_path, "rb") as f:
+                # SECURITY WARNING: Only load trusted pickles. Checksums or signatures recommended for public usage.
                 s = pickle.load(f)
                 gen.solved = s.get("solved", set())
                 gen.complexity = s.get("complexity", 1)
