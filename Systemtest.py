@@ -37,6 +37,8 @@ try:
 except ImportError:
     np = None
 
+from neuro_genetic_synthesizer import NeuroGeneticSynthesizer, NeuroInterpreter
+
 # ==============================================================================
 # Modular Synthesis Package Integration
 # ==============================================================================
@@ -12297,9 +12299,12 @@ class NLMN:
                  
         return {}
         
-    def learn(self, io_pairs, success_expr_str):
-        """Episodic Storage: Store (Task, Solution)"""
+    def learn(self, io_pairs, success_expr_str=None, **kwargs):
+        """Episodic Storage: Store (Task, Solution). Accepts success kwarg for compatibility."""
         if not self.enabled: return
+        # Handle legacy/alternate keyword args safely
+        if success_expr_str is None and "success" in kwargs:
+            success_expr_str = str(kwargs.get("success", ""))
         
         # 1. Extract idealized priors from solution string
         ideal_priors = {}
@@ -13777,20 +13782,22 @@ class HRMSidecar:
         # Bezalel Engine Integration (Universal Resonance)
         self.bezalel = BezalelSynthesizer()
 
-        if quick:
-            self.synthesizer = BottomUpSynthesizer(
-                max_depth=3, 
-                max_candidates=20000, 
-                bank_cap=300, 
-                guided=guided,
-                meta_state=self.meta_state,
-                mutator=self.mutator
+        # [NEW] Neuro-Genetic Synthesis Engine
+        # Replaces old BottomUpSynthesizer with Intelligent Evolution
+        if guided and HAS_TORCH:
+            print("[HRM] Initializing Neural Guide (NLMN)...")
+            self.guide = NLMN(embedding_dim=64)
+            self.synthesizer = NeuroGeneticSynthesizer(
+                neural_guide=self.guide,
+                pop_size=200,
+                generations=20
             )
         else:
-            self.synthesizer = BottomUpSynthesizer(
-                guided=guided,
-                meta_state=self.meta_state,
-                mutator=self.mutator
+            # Fallback to unguided genetic synthesis if no torch
+            self.synthesizer = NeuroGeneticSynthesizer(
+                neural_guide=None, 
+                pop_size=200,
+                generations=20
             )
         self.concept_count = 0
 
@@ -13841,6 +13848,322 @@ class HRMSidecar:
                     print(f"  [Persistence] Failed to save checkpoint: {e}")
 
                 return [(final_code, (ast_obj, k, v))]
+    def inject(self, concepts):
+        """Inject discovered concepts into the system's grammar."""
+        for item in concepts:
+            # Handle different result formats safely
+            if len(item) == 4:
+                code, ast_obj, k, v = item
+            elif len(item) == 2:
+                code, meta = item
+                ast_obj = meta[0] if isinstance(meta, tuple) else meta
+            else:
+                continue
+
+            if hasattr(self, 'meta_state') and hasattr(ast_obj, '__repr__'):
+                name = f"Op{len(self.meta_state.abstractions)}"
+                self.meta_state.add_abstraction(name, ast_obj)
+                print(f"  [HRM-Sidecar] Injected abstraction: {name}")
+            
+            # [RSI] Register with Neuro-Genetic Synthesizer
+            if hasattr(self.synthesizer, 'register_primitive'):
+                try:
+                    # Construct valid context with base primitives
+                    context = {}
+                    context.update(NeuroInterpreter.PRIMS)
+                    
+                    # Create the function
+                    # code is like "mul(n, n)"
+                    # We want "lambda n: mul(n, n)"
+                    lambda_src = f"lambda n: {code}"
+                    
+                    # Compile
+                    func = eval(lambda_src, context)
+                    
+                    # Name it
+                    concept_name = f"concept_{self.concept_count}"
+                    self.synthesizer.register_primitive(concept_name, func)
+                    print(f"  [RSI] Registered executable primitive: {concept_name} -> {code}")
+                    
+                except Exception as e:
+                    print(f"  [RSI] Failed to register primitive: {e}")
+
+
+# ==============================================================================
+# SINGULARITY CORE: 4 Advanced Cognitive Capabilities
+# ==============================================================================
+
+class CausalReasoner:
+    """인과 추론 (Causal Reasoning) - Identifies cause-effect relationships."""
+    def __init__(self):
+        self.causal_graph = {}
+    
+    def infer_causality(self, io_pairs):
+        if len(io_pairs) < 3: return {"causal_type": "unknown", "confidence": 0.0}
+        inputs = [p['input'] for p in io_pairs]
+        outputs = [p['output'] for p in io_pairs]
+        diffs_in = [inputs[i+1] - inputs[i] for i in range(len(inputs)-1)]
+        diffs_out = [outputs[i+1] - outputs[i] for i in range(len(outputs)-1)]
+        causal_type, confidence = "unknown", 0.0
+        if all(d >= 0 for d in diffs_in) and all(d >= 0 for d in diffs_out):
+            causal_type, confidence = "monotonic_positive", 0.9
+        elif all(d >= 0 for d in diffs_in) and all(d <= 0 for d in diffs_out):
+            causal_type, confidence = "monotonic_negative", 0.9
+        return {"causal_type": causal_type, "confidence": confidence}
+
+
+class PhysicsIntuition:
+    """물리 직관 (Physical Intuition) - Embeds basic physics knowledge."""
+    def analyze_sequence(self, values):
+        if len(values) < 2: return {"pattern": "insufficient_data"}
+        d1 = [values[i+1] - values[i] for i in range(len(values)-1)]
+        d2 = [d1[i+1] - d1[i] for i in range(len(d1)-1)] if len(d1) > 1 else []
+        pattern = "unknown"
+        if all(abs(d) < 0.01 for d in d1): pattern = "equilibrium"
+        elif len(d2) > 0 and all(abs(d) < 0.01 for d in d2): pattern = "linear_motion"
+        elif len(d2) > 0 and len(set(round(d, 1) for d in d2)) == 1: pattern = "quadratic"
+        return {"pattern": pattern, "d1": d1, "d2": d2}
+
+
+class SelfStateModel:
+    """자기 상태 모델링 (Self-State Modeling) - Internal state representation."""
+    def __init__(self):
+        self.state = {"concepts": 0, "tasks": 0, "capability": 1.0, "confidence": 0.5}
+        self.history = []
+    
+    def update(self, key, value):
+        old = self.state.get(key)
+        self.state[key] = value
+        self.history.append({"time": time.time(), "key": key, "old": old, "new": value})
+    
+    def introspect(self):
+        return {"state": dict(self.state), "changes": len(self.history)}
+    
+    def assess(self):
+        cap = self.state.get("capability", 1.0)
+        if cap > 5: return "highly_capable"
+        elif cap > 2: return "competent"
+        return "learning"
+
+
+class MetaCognition:
+    """반사적 사고 / 메타-인지 (Meta-Cognition) - Thinks about thinking."""
+    def __init__(self):
+        self.thinking_log = []
+        self.strategy_scores = {}
+        self.meta_level = 1
+        self.associations = {}
+        self.transfers = []
+    
+    def log_thought(self, thought_type, content, success=None):
+        self.thinking_log.append({"time": time.time(), "type": thought_type, "success": success, "level": self.meta_level})
+        if success is not None:
+            old = self.strategy_scores.get(thought_type, 0.5)
+            self.strategy_scores[thought_type] = 0.9 * old + 0.1 * (1.0 if success else 0.0)
+    
+    def reflect(self):
+        self.meta_level = 2
+        recent = self.thinking_log[-20:] if len(self.thinking_log) > 20 else self.thinking_log
+        successes = sum(1 for t in recent if t.get("success") is True)
+        failures = sum(1 for t in recent if t.get("success") is False)
+        rate = successes / max(1, successes + failures)
+        rec = "change_strategy" if failures > successes * 2 else "continue"
+        self.meta_level = 1
+        return {"recent_success_rate": rate, "recommendation": rec}
+    
+    def meta_transfer(self, source, target, knowledge):
+        self.transfers.append({"source": source, "target": target, "time": time.time()})
+        if source not in self.associations: self.associations[source] = []
+        if target not in self.associations[source]: self.associations[source].append(target)
+    
+    def continuous_associate(self, concept):
+        result, queue, depth = set(), [concept], 0
+        while queue and depth < 3:
+            next_q = []
+            for c in queue:
+                for n in self.associations.get(c, []):
+                    if n not in result: result.add(n); next_q.append(n)
+            queue, depth = next_q, depth + 1
+        return list(result)
+    
+    def elevate_meta_level(self):
+        self.meta_level = min(self.meta_level + 1, 5)
+    
+    def get_cognitive_state(self):
+        return {"meta_level": self.meta_level, "thoughts": len(self.thinking_log), "transfers": len(self.transfers)}
+
+
+class CognitiveCore:
+    """Unified Cognitive Core integrating all 4 capabilities."""
+    def __init__(self):
+        self.causal = CausalReasoner()
+        self.physics = PhysicsIntuition()
+        self.self_model = SelfStateModel()
+        self.meta = MetaCognition()
+    
+    def analyze_task(self, io_pairs):
+        causal_info = self.causal.infer_causality(io_pairs)
+        outputs = [p['output'] for p in io_pairs]
+        physics_info = self.physics.analyze_sequence(outputs)
+        self.meta.log_thought("analysis", f"{len(io_pairs)} pairs")
+        return {"causal": causal_info, "physics": physics_info}
+    
+    def learn_result(self, task, success):
+        self.meta.log_thought("result", task, success)
+        delta = 0.05 if success else -0.02
+        self.self_model.update("confidence", max(0.1, min(1.0, self.self_model.state["confidence"] + delta)))
+        if success: self.self_model.update("tasks", self.self_model.state["tasks"] + 1)
+
+
+class AutonomousTaskGenerator:
+    """Generates increasingly complex tasks autonomously."""
+    TEMPLATES = [
+        ("identity", lambda n: n), ("double", lambda n: n * 2), ("square", lambda n: n * n),
+        ("triangular", lambda n: n * (n + 1) // 2),
+    ]
+    
+    def __init__(self, seed=42):
+        self.rng = random.Random(seed)
+        self.solved = set()
+        self.complexity = 1
+        self.gen = 0
+    
+    def generate(self):
+        self.gen += 1
+        avail = self.TEMPLATES[:min(self.complexity + 2, len(self.TEMPLATES))]
+        name, fn = self.rng.choice(avail)
+        ios = [{"input": n, "output": fn(n)} for n in range(7)]
+        return f"{name}_g{self.gen}", ios
+    
+    def report_solved(self, name):
+        self.solved.add(name)
+        if len(self.solved) % 3 == 0: self.complexity = min(self.complexity + 1, len(self.TEMPLATES))
+
+
+class SingularityMonitor:
+    """Monitors progress toward singularity."""
+    def __init__(self):
+        self.start = time.time()
+        self.concepts = 0
+        self.tasks = 0
+        self.depth = 0
+        self.caps = []
+    
+    def record_concept(self, complexity=1): self.concepts += 1; self.depth = max(self.depth, complexity)
+    def record_task(self): self.tasks += 1
+    
+    def capability(self):
+        s = self.concepts * math.log(1 + self.tasks) * (1 + self.depth)
+        self.caps.append(s); return s
+    
+    def accelerating(self):
+        if len(self.caps) < 5: return False
+        diffs = [self.caps[i+1] - self.caps[i] for i in range(-5, -1)]
+        return all(diffs[i+1] > diffs[i] for i in range(len(diffs)-1))
+    
+    def status(self):
+        s = self.capability()
+        acc = "🚀 ACCELERATING!" if self.accelerating() else ""
+        print(f"\n[SINGULARITY] C:{self.concepts} T:{self.tasks} D:{self.depth} S:{s:.2f} {acc}")
+
+
+def run_hrm_life():
+    """INFINITE HRM LIFE LOOP - 4 Cognitive Capabilities + RSI"""
+    print("\n" + "=" * 70)
+    print("  SINGULARITY LOOP - 인과추론 | 물리직관 | 자기상태 | 메타인지")
+    print("  Ctrl+C to stop.")
+    print("=" * 70)
+    
+    seed = int(time.time()) % 10000
+    random.seed(seed)
+    if np: np.random.seed(seed)
+    
+    tools = ToolRegistry()
+    hrm = HRMSidecar(tools, quick=False, guided=True)
+    gen = AutonomousTaskGenerator(seed)
+    mon = SingularityMonitor()
+    cog = CognitiveCore()
+    
+    state_path = "rsi_state.pkl"
+    if os.path.exists(state_path):
+        try:
+            with open(state_path, "rb") as f:
+                s = pickle.load(f)
+                gen.solved = s.get("solved", set())
+                gen.complexity = s.get("complexity", 1)
+                mon.concepts = s.get("concepts", 0)
+                mon.tasks = s.get("tasks", 0)
+        except: pass
+    
+    cycle, last_save = 0, time.time()
+    try:
+        while True:
+            cycle += 1
+            print(f"\n{'='*50} CYCLE {cycle} | L:{gen.complexity} | M:{cog.meta.meta_level} {'='*10}")
+            
+            name, ios = gen.generate()
+            print(f"[Task] {name}")
+            
+            analysis = cog.analyze_task(ios)
+            print(f"[Cognitive] {analysis['causal']['causal_type']} | {analysis['physics']['pattern']}")
+            
+            try:
+                # Use BottomUpSynthesizer directly for actual synthesis
+                results = hrm.synthesizer.synthesize(
+                    ios, 
+                    deadline=time.time()+30, 
+                    task_id=name,
+                    task_params={"task_index": float(cycle), "task_size": float(len(ios))}
+                )
+                success = bool(results)
+                if success:
+                    print("[SUCCESS] ✅")
+                    gen.report_solved(name); mon.record_task()
+                    for code, expr, k, v in results:
+                        mon.record_concept(gen.complexity)
+                        print(f"  [Discovered] {expr}")
+                        # Save checkpoint for RSI proof
+                        try:
+                            ckpt_dir = "checkpoints"
+                            if not os.path.exists(ckpt_dir): os.makedirs(ckpt_dir)
+                            ckpt_path = os.path.join(ckpt_dir, f"brain_gen_{int(time.time()*1000)}.pkl")
+                            with open(ckpt_path, "wb") as f:
+                                pickle.dump({"name": name, "code": code, "expr": str(expr)}, f)
+                            print(f"  [RSI Checkpoint] {ckpt_path}")
+                        except: pass
+                    
+                    # [ACTIVE RSI] Inject discoveries back into the engine immediately
+                    hrm.inject(results)
+                    
+                    cog.meta.meta_transfer("synthesis", name, results)
+                else: print("[FAILED] ❌")
+                cog.learn_result(name, success)
+            except Exception as e: print(f"[ERROR] {e}"); cog.learn_result(name, False)
+            
+            if cycle % 5 == 0:
+                mon.status()
+                ref = cog.meta.reflect()
+                print(f"[Meta] rate:{ref['recent_success_rate']:.2f} rec:{ref['recommendation']}")
+                if ref["recommendation"] == "change_strategy": cog.meta.elevate_meta_level()
+            
+            if time.time() - last_save > 60:
+                try:
+                    with open(state_path, "wb") as f:
+                        pickle.dump({"solved": gen.solved, "complexity": gen.complexity, "concepts": mon.concepts, "tasks": mon.tasks}, f)
+                    last_save = time.time()
+                except: pass
+            
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        try:
+            with open(state_path, "wb") as f:
+                pickle.dump({"solved": gen.solved, "complexity": gen.complexity, "concepts": mon.concepts, "tasks": mon.tasks}, f)
+        except: pass
+        mon.status()
+        print(f"\n[Summary] Cycles:{cycle} Tasks:{len(gen.solved)} Meta:{cog.meta.meta_level}")
+        if mon.accelerating(): print("🚀 ACCELERATION DETECTED!")
+        print("Goodbye! 👋")
+
 
 def run_synthesis_verification_suite(
     quick: bool = False,
