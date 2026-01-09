@@ -4398,6 +4398,8 @@ class TaskDescriptor:
             "switching": 0.7,
             "classification": 0.9,
             "list": 0.2,
+            "string": 0.25,
+            "compound": 0.35,
             "arc": 0.4,
             "other": 0.6,
         }
@@ -4405,7 +4407,12 @@ class TaskDescriptor:
             family_map.get(self.family, 0.0),
             1.0 if self.input_kind == "list" else 0.0,
             1.0 if self.input_kind == "grid" else 0.0,
+            1.0 if self.input_kind == "string" else 0.0,
+            1.0 if self.input_kind == "list_string" else 0.0,
             1.0 if self.output_kind == "class" else 0.0,
+            1.0 if self.output_kind == "list" else 0.0,
+            1.0 if self.output_kind == "string" else 0.0,
+            1.0 if self.output_kind == "list_string" else 0.0,
             float(self.n_train) / 100.0,
             float(self.n_hold) / 100.0,
             float(self.n_test) / 100.0,
@@ -4417,6 +4424,16 @@ class TaskDescriptor:
 
     def snapshot(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+STRING_TASK_NAMES = {
+    "str_find",
+    "str_shift",
+}
+
+COMPOUND_TASK_NAMES = {
+    "list_str_upper",
+}
 
 
 @dataclass
@@ -4448,6 +4465,10 @@ class TaskSpec:
             family = "classification"
         elif self.name in ("sort", "reverse", "filter", "max", "even_reverse_sort"):
             family = "list"
+        elif self.name in STRING_TASK_NAMES:
+            family = "string"
+        elif self.name in COMPOUND_TASK_NAMES:
+            family = "compound"
         elif self.name == "self_audit":
             family = "self_audit"
         elif self.name in ALGO_TASK_NAMES:
@@ -4459,8 +4480,14 @@ class TaskSpec:
             family=family,
             input_kind="vector"
             if family == "self_audit"
-            else ("list" if family in ("list", "algo") else ("grid" if family == "arc" else "scalar")),
-            output_kind="class" if family == "classification" else "scalar",
+            else (
+                "list"
+                if family in ("list", "algo")
+                else ("grid" if family == "arc" else ("string" if family == "string" else ("list_string" if family == "compound" else "scalar")))
+            ),
+            output_kind="class"
+            if family == "classification"
+            else ("list" if family in ("list", "compound") else ("string" if family == "string" else "scalar")),
             n_train=self.n_train,
             n_hold=self.n_hold,
             n_test=self.n_test,
@@ -4512,6 +4539,19 @@ def _gen_graph(rng: random.Random, n_min: int, n_max: int) -> List[List[int]]:
                 neigh.append(j)
         g.append(neigh)
     return g
+
+STRING_ALPHABET = "abcdefgxyz"
+
+def _gen_string(rng: random.Random, min_len: int, max_len: int, alphabet: str = STRING_ALPHABET) -> str:
+    ln = rng.randint(min_len, max_len)
+    return "".join(rng.choice(alphabet) for _ in range(ln))
+
+def _tokenize_string(text: str, alphabet: str = STRING_ALPHABET) -> List[int]:
+    index = {ch: i for i, ch in enumerate(alphabet)}
+    return [index.get(ch, -1) for ch in text]
+
+def _detokenize_string(tokens: List[int], alphabet: str = STRING_ALPHABET) -> str:
+    return "".join(alphabet[t] if 0 <= t < len(alphabet) else "?" for t in tokens)
 
 def _algo_descriptor(name: str) -> Dict[str, Any]:
     return {
@@ -4862,6 +4902,76 @@ def sample_batch(rng: random.Random, t: TaskSpec) -> Optional[Batch]:
         y_te = [f(x) for x in x_te]
         return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st, x_te, y_te)
 
+    if t.name in STRING_TASK_NAMES:
+        def gen_strings(k, min_len, max_len):
+            return [_gen_string(rng, min_len, max_len) for _ in range(k)]
+
+        if t.name == "str_find":
+            texts = gen_strings(t.n_train + t.n_hold + t.n_test, int(t.x_min), int(t.x_max))
+            x_tr, y_tr = [], []
+            x_ho, y_ho = [], []
+            x_st, y_st = [], []
+            x_te, y_te = [], []
+            for idx, text in enumerate(texts):
+                if rng.random() < 0.7 and len(text) >= 2:
+                    start = rng.randint(0, max(0, len(text) - 2))
+                    pattern = text[start:start + rng.randint(1, min(3, len(text) - start))]
+                else:
+                    pattern = _gen_string(rng, 1, min(3, int(t.x_max)))
+                pos = text.find(pattern)
+                pair = [_tokenize_string(text), _tokenize_string(pattern)]
+                if idx < t.n_train:
+                    x_tr.append(pair)
+                    y_tr.append(pos)
+                elif idx < t.n_train + t.n_hold:
+                    x_ho.append(pair)
+                    y_ho.append(pos)
+                else:
+                    x_te.append(pair)
+                    y_te.append(pos)
+            x_st = x_ho[:]
+            y_st = y_ho[:]
+            return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st, x_te, y_te)
+
+        if t.name == "str_shift":
+            x_tr = gen_strings(t.n_train, int(t.x_min), int(t.x_max))
+            x_ho = gen_strings(t.n_hold, int(t.x_min), int(t.x_max))
+            x_st = gen_strings(t.n_hold, int(t.x_min) + 1, int(t.x_max) + 1)
+            x_te = gen_strings(max(1, t.n_test), int(t.x_min), int(t.x_max))
+
+            def shift_tokens(text: str) -> List[int]:
+                tokens = _tokenize_string(text)
+                return [((t + 1) % len(STRING_ALPHABET)) if t >= 0 else t for t in tokens]
+
+            y_tr = [shift_tokens(x) for x in x_tr]
+            y_ho = [shift_tokens(x) for x in x_ho]
+            y_st = [shift_tokens(x) for x in x_st]
+            y_te = [shift_tokens(x) for x in x_te]
+            x_tr = [_tokenize_string(x) for x in x_tr]
+            x_ho = [_tokenize_string(x) for x in x_ho]
+            x_st = [_tokenize_string(x) for x in x_st]
+            x_te = [_tokenize_string(x) for x in x_te]
+            return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st, x_te, y_te)
+
+    if t.name in COMPOUND_TASK_NAMES:
+        def gen_string_lists(k, min_len, max_len, list_min, list_max):
+            out = []
+            for _ in range(k):
+                count = rng.randint(list_min, list_max)
+                out.append([_gen_string(rng, min_len, max_len) for _ in range(count)])
+            return out
+
+        if t.name == "list_str_upper":
+            x_tr = gen_string_lists(t.n_train, int(t.x_min), int(t.x_max), 2, 5)
+            x_ho = gen_string_lists(t.n_hold, int(t.x_min), int(t.x_max), 2, 5)
+            x_st = gen_string_lists(t.n_hold, int(t.x_min) + 1, int(t.x_max) + 1, 3, 6)
+            x_te = gen_string_lists(max(1, t.n_test), int(t.x_min), int(t.x_max), 2, 5)
+            y_tr = [[s.upper() for s in xs] for xs in x_tr]
+            y_ho = [[s.upper() for s in xs] for xs in x_ho]
+            y_st = [[s.upper() for s in xs] for xs in x_st]
+            y_te = [[s.upper() for s in xs] for xs in x_te]
+            return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st, x_te, y_te)
+
     # synthetic ARC-like generators if name starts with arc_
     if t.name.startswith("arc_"):
         def gen_grids(k, dim):
@@ -4931,6 +5041,12 @@ def task_suite(seed: int) -> List[TaskSpec]:
         TaskSpec(name="classification", x_min=-4.0, x_max=4.0, n_train=96, n_hold=64, n_test=64, noise=0.0),
         TaskSpec(name="sinmix", x_min=-6.0, x_max=6.0, n_train=96, n_hold=64, n_test=64, noise=0.01),
         TaskSpec(name="absline", x_min=-6.0, x_max=6.0, n_train=96, n_hold=64, n_test=64, noise=0.01),
+        TaskSpec(name="sort", x_min=4.0, x_max=8.0, n_train=64, n_hold=48, n_test=48, noise=0.0),
+        TaskSpec(name="reverse", x_min=4.0, x_max=8.0, n_train=64, n_hold=48, n_test=48, noise=0.0),
+        TaskSpec(name="filter", x_min=4.0, x_max=8.0, n_train=64, n_hold=48, n_test=48, noise=0.0),
+        TaskSpec(name="str_find", x_min=4.0, x_max=8.0, n_train=64, n_hold=48, n_test=48, noise=0.0),
+        TaskSpec(name="str_shift", x_min=4.0, x_max=8.0, n_train=64, n_hold=48, n_test=48, noise=0.0),
+        TaskSpec(name="list_str_upper", x_min=3.0, x_max=6.0, n_train=64, n_hold=48, n_test=48, noise=0.0),
         TaskSpec(name="self_audit", x_min=0.0, x_max=1.0, n_train=64, n_hold=48, n_test=48, noise=0.0),
     ]
     rng = random.Random(seed)
@@ -5066,6 +5182,10 @@ def calc_error(p: Any, t: Any) -> float:
     if isinstance(t, (int, float)):
         if isinstance(p, (int, float)):
             return (p - t) ** 2
+        return 1_000_000.0
+    if isinstance(t, str):
+        if isinstance(p, str):
+            return 0.0 if p == t else 1.0
         return 1_000_000.0
     if isinstance(t, list):
         if not isinstance(p, list):
