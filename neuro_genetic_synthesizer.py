@@ -433,13 +433,33 @@ class NeuroGeneticSynthesizer:
 
         self.atoms = [BSVar('n'), BSVal(0), BSVal(1), BSVal(2), BSVal(3)]
         self.ops = list(NeuroInterpreter.PRIMS.keys())
+        # [FIX] Track arity of operators to prevent generation errors
+        self.op_arities = {
+            'add': 2, 'sub': 2, 'mul': 2, 'div': 2, 'mod': 2, 'if_gt': 4
+        }
         self.structural_bias = {}
 
     def register_primitive(self, name: str, func: Callable):
         self.interp.register_primitive(name, func)
         if name not in self.ops:
             self.ops.append(name)
-            print(f"[NeuroGen] Registered new primitive: {name}")
+            # Inspect arity using inspect signature or simple heuristic
+            try:
+                import inspect
+                sig = inspect.signature(func)
+                arity = len(sig.parameters)
+                # Handle *args (variadic) -> assume unary wrapper for now as per Systemtest.py
+                # Systemtest.py creates: lambda *args: interp.run(expr_ast, {'n': args[0]...})
+                # If variadic, we default to 1 for "OpN(n)" usage pattern
+                for param in sig.parameters.values():
+                   if param.kind == inspect.Parameter.VAR_POSITIONAL:
+                       arity = 1
+                       break
+            except:
+                arity = 1 # Default to unary for lambdas if inspect fails
+                
+            self.op_arities[name] = arity
+            print(f"[NeuroGen] Registered new primitive: {name} (arity={arity})")
 
     def synthesize(self, io_pairs: List[Dict[str, Any]], deadline=None, task_id="", task_params=None, **kwargs) -> List[Tuple[str, Expr, float, float]]:
         # 1. Neural Guidance (Priors)
@@ -611,8 +631,8 @@ class NeuroGeneticSynthesizer:
         # Choose op based on Neural Priors
         op = self.rng.choices(list(op_probs.keys()), weights=list(op_probs.values()))[0]
 
-        # Arity check (special case for if_gt which is 4-ary)
-        arity = 4 if op == 'if_gt' else 2
+        # Dynamic Arity Check
+        arity = self.op_arities.get(op, 2)
         args = tuple(self._random_expr(depth-1, op_probs) for _ in range(arity))
         return BSApp(op, args)
 
@@ -643,8 +663,8 @@ class NeuroGeneticSynthesizer:
             # Op mutation
             if isinstance(p, BSApp):
                 new_op = self.rng.choices(list(op_probs.keys()), weights=list(op_probs.values()))[0]
-                arity = 4 if new_op == 'if_gt' else 2
-                current_arity = 4 if p.func == 'if_gt' else 2
+                arity = self.op_arities.get(new_op, 2)
+                current_arity = self.op_arities.get(p.func, 2)
 
                 if arity == current_arity:
                     return BSApp(new_op, p.args)
