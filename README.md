@@ -4,6 +4,32 @@
 
 This repository contains an autonomous algorithm discovery system implementing Recursive Self-Improvement (RSI). The system uses a hybrid Neuro-Genetic architecture to synthesize programs, discover reusable concepts, and expand its own grammar dynamically.
 
+## System Architecture
+
+```mermaid
+graph TD
+    subgraph "Decision & Logic (Python)"
+        Orchestrator[Systemtest.py<br/>(Orchestrator)]
+        Brain[Neuro-Genetic Synthesizer<br/>(H-Module)]
+        Purpose[SelfPurposeEngine<br/>(Autonomous Goals)]
+    end
+
+    subgraph "Speed Layer (Rust)"
+        RustVM[rs_machine<br/>(Virtual Machine)]
+    end
+
+    subgraph "Long-Term Memory"
+        Disk[(Concept Library)]
+    end
+
+    Purpose -->|1. Define Goal| Orchestrator
+    Orchestrator -->|2. Evolve Solution| Brain
+    Brain -->|3. Evaluate Genomes| RustVM
+    RustVM -->|4. Return Fitness| Brain
+    Brain -->|5. New Concept| Disk
+    Disk -.->|Reuse| Brain
+```
+
 ## Core Components
 
 * **Systemtest.py**: Main orchestrator handling the life-cycle loop, problem generation, and H-Module (Discovery) / L-Module (Execution) coordination.
