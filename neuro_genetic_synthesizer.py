@@ -87,13 +87,13 @@ class RustCompiler:
                 self.code.append((ops[fn], target_reg, target_reg + 1, target_reg))
                 
             elif fn == 'mod':
-                # Special case: rs_machine might not support MOD directly if not in primitives.
-                # Systemtest.py instructions: MOV, SET, SWAP, ADD, SUB, MUL, DIV, INC, DEC, LOAD, STORE, LDI, STI, JMP...
-                # No MOD instruction in generic rs_machine?
-                # Let's check Systemtest.py's _step function.
-                # op == "DIV": r[c] = r[a] / r[b]
-                # No MOD. So we fail compilation for mod.
-                raise ValueError("MOD instruction not supported in rs_machine")
+                # Compile LHS to target_reg
+                self._compile_recursive(expr.args[0], target_reg)
+                # Compile RHS to target_reg + 1
+                self._compile_recursive(expr.args[1], target_reg + 1)
+
+                # MOD target_reg, target_reg+1, target_reg
+                self.code.append(("MOD", target_reg, target_reg + 1, target_reg))
                 
             elif fn == 'if_gt':
                 # if_gt(a, b, c, d) -> if a > b then c else d
@@ -367,51 +367,48 @@ class NoveltyScorer:
         return rarity_sum / len(ngrams)
 
 # ==============================================================================
-# Meta-Controller (Self-Adaptive Logic)
 # ==============================================================================
-@dataclass
-class MetaParams:
-    mutation_rate: float
-    crossover_prob: float
-    population_size: int
 
-class MetaController:
+# ==============================================================================
+# Axiom Rewriter (Self-Rewriting Logic)
+# ==============================================================================
+class AxiomRewriter:
     """
-    RSI Engine: Monitors evolutionary progress and adapts hyperparameters.
-    If stagnating -> Increase exploration (Mutation).
-    If progressing -> Increase exploitation (Selection/Crossover).
+    Physically injects new AST node definitions into the NeuroInterpreter.
     """
-    def __init__(self):
-        self.history = []
-        self.params = MetaParams(mutation_rate=0.3, crossover_prob=0.7, population_size=200)
-        self.stagnation_counter = 0
-        self.last_best_fitness = -1.0
+    def __init__(self, interp: NeuroInterpreter):
+        self.interp = interp
+        self.new_primitives = []
+        self.rng = random.Random()
         
-    def update(self, current_best_fitness: float):
-        self.history.append(current_best_fitness)
-        
-        # Stagnation Detection
-        if current_best_fitness <= self.last_best_fitness:
-            self.stagnation_counter += 1
-        else:
-            self.stagnation_counter = 0
-            self.last_best_fitness = current_best_fitness
+    def attempt_rewrite(self):
+        """Dynamically generates a new primitive and registers it."""
+        if self.rng.random() < 0.1: # 10% chance per cycle
+            name = f"op_{len(self.new_primitives) + 100}"
+            # Generate a random binary operation
+            ops = [
+                lambda a, b: a + b + 1,
+                lambda a, b: a * b + a,
+                lambda a, b: (a + b) // 2,
+                lambda a, b: a - b + 1,
+            ]
+            func = self.rng.choice(ops)
             
-        # Recursive Adaptation Logic
-        if self.stagnation_counter > 5:
-            # Stagnating: Turbocharge Mutation (Exploration)
-            self.params.mutation_rate = min(0.9, self.params.mutation_rate * 1.5)
-            self.params.crossover_prob = max(0.1, self.params.crossover_prob * 0.8)
-            print(f"[RSI-Meta] Stagnation detected ({self.stagnation_counter}). Increasing Mutation to {self.params.mutation_rate:.2f}")
-            
-        elif self.stagnation_counter == 0 and len(self.history) > 1:
-            # Progressing: Stabilize (Exploitation)
-            self.params.mutation_rate = max(0.1, self.params.mutation_rate * 0.9)
-            self.params.crossover_prob = min(0.9, self.params.crossover_prob * 1.1)
-            # print(f"[RSI-Meta] Progress detected. Stabilizing Mutation to {self.params.mutation_rate:.2f}")
+            self.interp.register_primitive(name, func)
+            if name not in self.new_primitives:
+                self.new_primitives.append(name)
+                print(f"[AxiomRewriter] INJECTED new primitive: {name}")
+                return name
+        return None
 
-    def get_params(self) -> MetaParams:
-        return self.params
+    def dismantle(self, name: str):
+        """Removes a primitive that violates physical laws."""
+        if name in self.interp.PRIMS:
+            del self.interp.PRIMS[name]
+        if name in self.new_primitives:
+            self.new_primitives.remove(name)
+            print(f"[AxiomRewriter] DISMANTLED primitive: {name} (Violation Detected)")
+
 
 # ==============================================================================
 # Neuro-Genetic Synthesizer (Island Model)
@@ -419,13 +416,11 @@ class MetaController:
 class NeuroGeneticSynthesizer:
     def __init__(self, neural_guide=None, pop_size=200, generations=20, islands=3):
         self.guide = neural_guide
-        self.meta = MetaController() # Initialize RSI Meta-Controller
-        self.meta.params.population_size = pop_size # Sync initial param
-        
+        self.interp = NeuroInterpreter()
+        self.axiom_rewriter = AxiomRewriter(self.interp) # Initialize Axiom Rewriter
         self.pop_size = pop_size
         self.generations = generations
         self.num_islands = islands
-        self.interp = NeuroInterpreter()
         self.rng = random.Random()
         self.novelty = NoveltyScorer() # Novelty detection
         
@@ -499,15 +494,16 @@ class NeuroGeneticSynthesizer:
         for gen in range(self.generations):
             if deadline and time.time() > deadline: break
             
-            # --- META-CONTROLLER UPDATE ---
-            # 1. Update Meta-Controller with current best fitness
-            if best_fitness > 0:
-                self.meta.update(best_fitness)
+            # --- AXIOM REWRITER UPDATE ---
+            new_prim = self.axiom_rewriter.attempt_rewrite()
+            if new_prim:
+                if new_prim not in self.ops:
+                    self.ops.append(new_prim)
+                    self.op_arities[new_prim] = 2 # Assume binary for generated ops
             
-            # 2. Retrieve Dynamic Hyperparameters
-            meta_params = self.meta.get_params()
-            current_mutation_rate = meta_params.mutation_rate
-            current_crossover_prob = meta_params.crossover_prob
+            # Static Hyperparameters (No Tuning!)
+            current_mutation_rate = 0.1
+            current_crossover_prob = 0.5
             # ------------------------------
 
             # Migration (Ring Topology)
@@ -597,6 +593,18 @@ class NeuroGeneticSynthesizer:
                             phys_score += 10.0
                         else:
                             phys_score -= 50.0
+
+                        # STRICT GROUNDING: Dismantle if bounds exceeded
+                        if st.energy > goal.target_energy * 1.5 or st.structural_entropy > goal.target_entropy * 1.5:
+                            phys_score = -100.0
+                            # Dismantle recently added primitives
+                            if self.axiom_rewriter.new_primitives:
+                                victim = self.axiom_rewriter.new_primitives[-1]
+                                self.axiom_rewriter.dismantle(victim)
+                                if victim in self.ops:
+                                    self.ops.remove(victim)
+                                    if victim in self.op_arities:
+                                        del self.op_arities[victim]
 
                         return max(0.0, phys_score)
 
