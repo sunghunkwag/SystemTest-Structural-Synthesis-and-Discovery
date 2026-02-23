@@ -7,6 +7,10 @@ import random
 import time
 import math
 import collections
+try:
+    from self_purpose_engine import PhysicalGoal
+except ImportError:
+    PhysicalGoal = None
 from dataclasses import dataclass
 from typing import List, Dict, Any, Tuple, Optional, Callable
 
@@ -461,7 +465,7 @@ class NeuroGeneticSynthesizer:
             self.op_arities[name] = arity
             print(f"[NeuroGen] Registered new primitive: {name} (arity={arity})")
 
-    def synthesize(self, io_pairs: List[Dict[str, Any]], deadline=None, task_id="", task_params=None, **kwargs) -> List[Tuple[str, Expr, float, float]]:
+    def synthesize(self, io_pairs: List[Dict[str, Any]], deadline=None, task_id="", task_params=None, goal: Optional[Any] = None, **kwargs) -> List[Tuple[str, Expr, float, float]]:
         # 1. Neural Guidance (Priors)
         priors = {op: 1.0 for op in self.ops} 
         if 'mod' in priors: priors['mod'] = 0.5
@@ -511,9 +515,9 @@ class NeuroGeneticSynthesizer:
                 for i in range(self.num_islands):
                     target_i = (i + 1) % self.num_islands
                     # Move top 5%
-                    migrants = sorted(islands[i], key=lambda e: self._fitness(e, io_pairs, fast=True), reverse=True)[:int(island_pop_size*0.05)]
+                    migrants = sorted(islands[i], key=lambda e: self._fitness(e, io_pairs, fast=True, goal=goal), reverse=True)[:int(island_pop_size*0.05)]
                     # Replace worst in target
-                    islands[target_i].sort(key=lambda e: self._fitness(e, io_pairs, fast=True))
+                    islands[target_i].sort(key=lambda e: self._fitness(e, io_pairs, fast=True, goal=goal))
                     islands[target_i] = migrants + islands[target_i][len(migrants):]
                     # print(f"  [Island] Migration {i}->{target_i} ({len(migrants)} units)")
 
@@ -521,7 +525,7 @@ class NeuroGeneticSynthesizer:
             for i in range(self.num_islands):
                 scored_pop = []
                 for expr in islands[i]:
-                    raw_fit = self._fitness(expr, io_pairs)
+                    raw_fit = self._fitness(expr, io_pairs, goal=goal)
                     nov_score = self.novelty.score(expr)
                     final_fit = raw_fit + (nov_score * 5.0) # Bonus for novelty
                     
@@ -566,7 +570,7 @@ class NeuroGeneticSynthesizer:
             else: features.extend([0.0, 0.0])
         return features
 
-    def _fitness(self, expr, ios, fast=False):
+    def _fitness(self, expr, ios, fast=False, goal=None):
         # 1. Try Rust Acceleration
         jit_score = None
         if HAS_RUST_VM and self.num_islands > 0: # Ensure we are in a valid state
@@ -575,32 +579,36 @@ class NeuroGeneticSynthesizer:
                 instructions = compiler.compile(expr)
                 if instructions:
                     # Execute on Rust VM
-                    # Note: We need a fresh VM or reuse one. Creating generic VM is cheap?
-                    # Systemtest.py uses VirtualMachine(max_steps=400, ...)
-                    # We can instantiate rs_machine.VirtualMachine directly.
-                    # rs_machine.VirtualMachine(max_steps, mem_size, stack_limit)
                     vm = rs_machine.VirtualMachine(100, 64, 16)
                     
+                    # If PhysicalGoal is provided, optimize for physical invariants first
+                    if goal and hasattr(goal, 'target_energy'):
+                        # Run once to get metrics (using first input)
+                        inp_val = float(ios[0]['input']) if ios else 0.0
+                        st = vm.execute(instructions, [inp_val])
+
+                        energy_dist = abs(st.energy - goal.target_energy)
+                        entropy_dist = abs(st.structural_entropy - goal.target_entropy)
+
+                        # Physical fitness (Higher is better, max 100)
+                        phys_score = 100.0 / (1.0 + energy_dist + entropy_dist * 5.0)
+
+                        if st.halted_cleanly:
+                            phys_score += 10.0
+                        else:
+                            phys_score -= 50.0
+
+                        return max(0.0, phys_score)
+
+                    # Standard I/O fitness
                     score = 0
                     for io in ios:
-                        # Prepare input memory. 'n' is mapped to mem[0].
-                        # Rust VM execute takes inputs list.
                         inp_val = float(io['input'])
-                        # If input is list, use it; if scalar, wrap.
                         if isinstance(io['input'], list):
-                             # Not supported by simple compiler yet (scalar assumption)
-                             raise ValueError("List input not supported in JIT")
+                             raise ValueError('List input not supported in JIT')
                         
                         st = vm.execute(instructions, [inp_val])
-                        
-                        # Result in regs[0] (target_reg 0)
-                        # We verify clean halt?
-                        # if not st.halted_cleanly: score -= ...?
-                        # NeuroGen simple fitness just checks equality.
-                        
-                        # rs_machine.ExecutionState.regs is a list
                         out = st.regs[0]
-                        
                         expected = io['output']
                         if abs(out - expected) < 1e-9:
                              score += 1
@@ -610,10 +618,12 @@ class NeuroGeneticSynthesizer:
                              
                     return (score / len(ios)) * 100.0
             except Exception as e:
-                # Fallback to Python if compilation/execution fails (e.g. MOD op, depth)
                 pass
 
         # 2. Python Fallback
+        if goal:
+            return 0.0
+
         score = 0
         for io in ios:
             out = self.interp.run(expr, { 'n': io['input'] })

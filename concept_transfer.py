@@ -16,6 +16,40 @@ import hashlib
 
 
 # ==============================================================================
+# MODULE 0: ResourceHasher
+# ==============================================================================
+
+class ResourceHasher:
+    """
+    Physical similarity via Energy/Entropy fingerprinting.
+    Two expressions with similar resource profiles are considered physically isomorphic.
+    """
+
+    def __init__(self, tolerance: float = 0.1):
+        self.tolerance = tolerance
+        self.profile_index: Dict[str, List[Tuple[str, Any]]] = defaultdict(list)
+
+    def compute_hash(self, energy: float, entropy: float) -> str:
+        """
+        Quantize metrics into a hash bucket.
+        """
+        e_bucket = int(energy / 10.0) # 10-step buckets
+        s_bucket = int(entropy * 10.0) # 0.1-step buckets
+        return f"E{e_bucket}_S{s_bucket}"
+
+    def register(self, name: str, expr: Any, metrics: Dict[str, float]):
+        """Register a concept with its resource metrics."""
+        if 'energy' in metrics and 'structural_entropy' in metrics:
+            h = self.compute_hash(metrics['energy'], metrics['structural_entropy'])
+            self.profile_index[h].append((name, expr))
+
+    def find_similar(self, target_energy: float, target_entropy: float) -> List[Tuple[str, Any]]:
+        """Find concepts with matching resource profile."""
+        h = self.compute_hash(target_energy, target_entropy)
+        # Search neighbors too? For now exact bucket match.
+        return self.profile_index.get(h, [])
+
+# ==============================================================================
 # MODULE 1: ExecutionHasher
 # ==============================================================================
 
@@ -461,6 +495,7 @@ class ConceptTransferEngine:
     """
     
     def __init__(self, interpreter=None):
+        self.resource_hasher = ResourceHasher()
         self.hasher = ExecutionHasher(interpreter=interpreter)
         self.anti_unifier = MultiLevelAntiUnifier(max_level=3)
         self.graph_matcher = GraphIsomorphismMatcher()
@@ -470,13 +505,15 @@ class ConceptTransferEngine:
         self.concept_library: Dict[str, Any] = {}  # name -> expr
         self.transfer_log: List[Dict] = []
     
-    def register_concept(self, name: str, expr: Any):
+    def register_concept(self, name: str, expr: Any, metrics: Optional[Dict] = None):
         """Register a discovered concept with all 4 indices."""
         self.concept_library[name] = expr
         
         # Index in all modules
         run_func = lambda e, env: self.interpreter.run(e, env) if self.interpreter else None
         self.hasher.register(name, expr, run_func)
+        if metrics:
+            self.resource_hasher.register(name, expr, metrics)
         self.graph_matcher.register(name, expr)
         self.type_clusterer.register(name, expr, self.interpreter)
         
@@ -549,6 +586,7 @@ class ConceptTransferEngine:
         return {
             "total_concepts": len(self.concept_library),
             "execution_hashes": len(self.hasher.hash_index),
+            "resource_profiles": len(self.resource_hasher.profile_index),
             "structure_hashes": len(self.graph_matcher.graph_index),
             "type_clusters": len(self.type_clusterer.clusters),
             "level1_patterns": len(self.anti_unifier.patterns.get(1, [])),
