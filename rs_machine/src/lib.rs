@@ -102,6 +102,10 @@ struct ExecutionState {
     memory_reads: i32,
     #[pyo3(get)]
     memory_writes: i32,
+    #[pyo3(get)]
+    energy: f64,
+    #[pyo3(get)]
+    structural_entropy: f64,
 }
 
 #[pymethods]
@@ -124,6 +128,8 @@ impl ExecutionState {
             max_call_depth: 0,
             memory_reads: 0,
             memory_writes: 0,
+            energy: 0.0,
+            structural_entropy: 0.0,
         }
     }
 
@@ -240,13 +246,41 @@ impl VirtualMachine {
             st.max_call_depth = st.max_call_depth.max(st.stack.len() as i32);
         }
 
+        st.structural_entropy = VirtualMachine::calculate_entropy(&st.trace);
         st
     }
 }
 
 impl VirtualMachine {
-    fn step(&self, st: &mut ExecutionState, inst: &FastInstruction) {
+
+    fn calculate_entropy(trace: &Vec<i32>) -> f64 {
+        if trace.is_empty() {
+            return 0.0;
+        }
+        let mut counts = HashMap::new();
+        for &pc in trace {
+            *counts.entry(pc).or_insert(0) += 1;
+        }
+        let total = trace.len() as f64;
+        let mut entropy = 0.0;
+        for &count in counts.values() {
+            let p = count as f64 / total;
+            entropy -= p * p.log2();
+        }
+        entropy
+    }
+
+        fn step(&self, st: &mut ExecutionState, inst: &FastInstruction) {
         let op = inst.op;
+        let cost = match op {
+            OpCode::DIV => 4.0,
+            OpCode::MUL => 2.0,
+            OpCode::LOAD | OpCode::STORE | OpCode::LDI | OpCode::STI => 1.5,
+            OpCode::JMP | OpCode::JZ | OpCode::JNZ | OpCode::JGT | OpCode::JLT => 0.5,
+            OpCode::HALT => 0.0,
+            _ => 1.0,
+        };
+        st.energy += cost;
         let a = inst.a;
         let b = inst.b;
         let c = inst.c;
