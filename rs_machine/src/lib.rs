@@ -26,7 +26,7 @@ impl Instruction {
 #[derive(Clone, Copy, Debug)]
 enum OpCode {
     MOV, SET, SWAP,
-    ADD, SUB, MUL, DIV, INC, DEC,
+    ADD, SUB, MUL, DIV, MOD, INC, DEC,
     LOAD, STORE, LDI, STI,
     JMP, JZ, JNZ, JGT, JLT,
     CALL, RET, HALT,
@@ -43,6 +43,7 @@ impl From<&str> for OpCode {
             "SUB" => OpCode::SUB,
             "MUL" => OpCode::MUL,
             "DIV" => OpCode::DIV,
+            "MOD" => OpCode::MOD,
             "INC" => OpCode::INC,
             "DEC" => OpCode::DEC,
             "LOAD" => OpCode::LOAD,
@@ -273,7 +274,7 @@ impl VirtualMachine {
         fn step(&self, st: &mut ExecutionState, inst: &FastInstruction) {
         let op = inst.op;
         let cost = match op {
-            OpCode::DIV => 4.0,
+            OpCode::DIV | OpCode::MOD => 4.0,
             OpCode::MUL => 2.0,
             OpCode::LOAD | OpCode::STORE | OpCode::LDI | OpCode::STI => 1.5,
             OpCode::JMP | OpCode::JZ | OpCode::JNZ | OpCode::JGT | OpCode::JLT => 0.5,
@@ -340,6 +341,16 @@ impl VirtualMachine {
                 let den = st.regs[rb];
                 if den.abs() > 1e-9 {
                     st.regs[(c % 8).abs() as usize] = clamp(st.regs[ra] / den);
+                } else {
+                    st.regs[(c % 8).abs() as usize] = 0.0;
+                }
+            }
+            OpCode::MOD => {
+                let ra = (a % 8).abs() as usize;
+                let rb = (b % 8).abs() as usize;
+                let den = st.regs[rb];
+                if den.abs() > 1e-9 {
+                    st.regs[(c % 8).abs() as usize] = clamp(st.regs[ra] % den);
                 } else {
                     st.regs[(c % 8).abs() as usize] = 0.0;
                 }

@@ -1,4 +1,3 @@
-
 import sys
 import os
 import random
@@ -56,16 +55,25 @@ def test_rust_jit():
     except Exception as e:
         print(f"[FAIL] Runtime error: {e}")
 
-    # 4. Test Fallback (MOD op)
-    # mod(n, 2) -> Should fail compilation
-    print("\n[TEST] Fallback (MOD operator)")
+    # 4. Test MOD op
+    # mod(n, 2) -> Should SUCCEED compilation
+    print("\n[TEST] MOD operator")
     expr_mod = BSApp('mod', (BSVar('n'), BSVal(2)))
     compiler_mod = RustCompiler()
     insts_mod = compiler_mod.compile(expr_mod)
-    if insts_mod is None:
-        print("[PASS] Compilation correctly returned None for MOD op.")
+    if insts_mod is not None:
+        print(f"[PASS] Compilation succeeded for MOD op: {insts_mod}")
+        # Execute MOD
+        vm_mod = rs_machine.VirtualMachine(100, 64, 16)
+        # 3 % 2 = 1
+        st_mod = vm_mod.execute(insts_mod, [3.0])
+        res_mod = st_mod.regs[0]
+        if abs(res_mod - 1.0) < 1e-9:
+            print(f"[PASS] MOD result correct: {res_mod}")
+        else:
+            print(f"[FAIL] MOD result {res_mod} != expected 1.0")
     else:
-        print(f"[FAIL] Compilation should have failed for MOD, got: {insts_mod}")
+        print("[FAIL] Compilation failed for MOD op (Should succeed now).")
 
 if __name__ == "__main__":
     test_rust_jit()
