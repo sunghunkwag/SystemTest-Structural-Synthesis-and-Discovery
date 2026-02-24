@@ -64,6 +64,34 @@ class ExecutionHasher:
         self.interpreter = interpreter
         self.hash_index: Dict[str, List[Tuple[str, Any]]] = defaultdict(list)  # hash -> [(name, expr)]
     
+    @staticmethod
+    def _normalize_output(val) -> str:
+        """
+        Normalize a numeric output to a canonical string.
+        Converts float-like integers (e.g. 2.0) to plain integers ("2")
+        to avoid hash mismatches caused by float/int type differences.
+        """
+        if val is None:
+            return 'ERR'
+        try:
+            f = float(val)
+            if abs(f - round(f)) < 1e-9:
+                return str(int(round(f)))
+            return f"{f:.6g}"
+        except (TypeError, ValueError):
+            return str(val)
+
+    @staticmethod
+    def _approx_equal(a, b, tol: float = 1e-6) -> bool:
+        """
+        Tolerance-based equality check for numeric outputs.
+        Handles float/int type mismatches (e.g. 2.0 == 2).
+        """
+        try:
+            return abs(float(a) - float(b)) < tol
+        except (TypeError, ValueError):
+            return a == b
+
     def compute_hash(self, expr, run_func=None) -> Optional[str]:
         """
         Compute I/O signature hash for an expression.
@@ -81,7 +109,8 @@ class ExecutionHasher:
                 if result is None:
                     outputs.append('ERR')
                 else:
-                    outputs.append(str(result))
+                    # FIX: normalize to canonical form to prevent float/int hash collision
+                    outputs.append(ExecutionHasher._normalize_output(result))
             except:
                 outputs.append('ERR')
         
@@ -96,66 +125,60 @@ class ExecutionHasher:
     
     def find_similar(self, target_outputs: List[Any]) -> List[Tuple[str, Any]]:
         """Find concepts with matching output signature."""
-        signature = ','.join(str(o) if o is not None else 'ERR' for o in target_outputs)
+        # FIX: normalize target outputs the same way as compute_hash does
+        signature = ','.join(ExecutionHasher._normalize_output(o) for o in target_outputs)
         h = hashlib.md5(signature.encode()).hexdigest()[:16]
         return self.hash_index.get(h, [])
     
-    def find_by_partial_match(self, task_ios: List[Dict[str, Any]], threshold: float = 0.8) -> List[Tuple[str, Any, float]]:
+    def find_by_partial_match(
+        self,
+        task_ios: List[Dict[str, Any]],
+        threshold: float = 0.8
+    ) -> List[Tuple[str, Any, float, str]]:
         """
-        Find concepts with partial output match.
-        Uses ACTUAL input values from I/O pairs, not assumed indices.
+        Find concepts with partial output match using tolerance-based fuzzy scoring.
+
+        Returns: List of (name, expr, score, method) sorted by score descending.
+
+        FIX (v2): Replaced exact tuple equality with per-element tolerance comparison
+        (_approx_equal) so that float outputs (e.g. 2.0) correctly match integer
+        targets (e.g. 2).  Score is now the fraction of matching I/O pairs.
+        FIX (v2): Returns 4-tuples consistently with ConceptTransferEngine.transfer().
         """
-        # Updated to handle ProgramGenome objects explicitly
         candidate_match = []
-        
-        # Pre-compute fingerprints for all library concepts
-        lib_fingerprints = {}
-        
-        # We iterate over the hash index to get all registered concepts
-        # self.hash_index maps hash -> [(name, expr)]
-        for h, concepts in self.hash_index.items():
+        target_outputs_tuple = tuple(io['output'] for io in task_ios)
+
+        # Build fingerprints for every registered concept
+        lib_fingerprints: Dict[str, Tuple[Any, ...]] = {}
+        lib_exprs: Dict[str, Any] = {}
+
+        for _, concepts in self.hash_index.items():
             for name, concept_expr in concepts:
-                # Handle ProgramGenome: Convert to string representation for hashing/comparison
-                if hasattr(concept_expr, 'instructions'):
-                    # Convert [Instruction(op='ADD', ...)] -> "ADD(0,0,0);HALT(0,0,0)"
-                    s_expr = ";".join([f"{i.op}({i.a},{i.b},{i.c})" for i in concept_expr.instructions])
-                else:
-                    s_expr = str(concept_expr)
-                    
-                # Get behavior on Transfer Task inputs
                 outputs = []
                 is_valid = True
                 for io in task_ios:
                     try:
-                        # Use adapter to run genome
                         val = self.interpreter.run(concept_expr, {'n': io['input']})
                         outputs.append(val)
                     except Exception:
                         is_valid = False
                         break
-                
+
                 if is_valid:
                     lib_fingerprints[name] = tuple(outputs)
+                    lib_exprs[name] = concept_expr
 
-        # Compare against target outputs
-        target_outputs = tuple(io['output'] for io in task_ios)
-        
+        # Score each candidate with tolerance-aware comparison
         for name, outputs in lib_fingerprints.items():
-            if outputs == target_outputs:
-                # PERFECT MATCH FOUND
-                # Retrieve expr again (inefficient but safe given structure)
-                # Ideally we store it in lib_fingerprints but keeping change minimal
-                # We need to find the expr for 'name'
-                expr = None
-                for _, concepts in self.hash_index.items():
-                    for n, e in concepts:
-                        if n == name:
-                            expr = e
-                            break
-                    if expr: break
-                
-                if expr:
-                    candidate_match.append((name, expr, 1.0, "behavioral_match"))
+            if len(outputs) != len(target_outputs_tuple):
+                continue
+            match_count = sum(
+                1 for a, b in zip(outputs, target_outputs_tuple)
+                if ExecutionHasher._approx_equal(a, b)
+            )
+            score = match_count / len(target_outputs_tuple)
+            if score >= threshold:
+                candidate_match.append((name, lib_exprs[name], score, "behavioral_match"))
 
         return sorted(candidate_match, key=lambda x: -x[2])
 
@@ -450,7 +473,7 @@ class TypeClusterer:
                 if isinstance(result, int):
                     output_type = "Int"
                 elif isinstance(result, float):
-                    output_type = "Float"
+                    output_type = "Int"  # treat float-like ints as Int
                 elif isinstance(result, bool):
                     output_type = "Bool"
                 elif isinstance(result, list):
@@ -543,16 +566,18 @@ class ConceptTransferEngine:
         # Extract target outputs
         target_outputs = [io.get('output') for io in problem_ios]
         
-        # Method 1: Execution hash matching
+        # Method 1: Execution hash matching (exact, full-range)
         exact_matches = self.hasher.find_similar(target_outputs)
         for name, expr in exact_matches:
             candidates.append((name, expr, 1.0, "exact_hash"))
         
-        # Pass full I/O pairs for proper input value matching
+        # FIX: Correctly unpack 4-tuples returned by find_by_partial_match.
+        # Previous code unpacked as (name, expr, score) causing ValueError when
+        # find_by_partial_match actually returned 4-tuples.
         partial_matches = self.hasher.find_by_partial_match(problem_ios, threshold=0.7)
-        for name, expr, score in partial_matches:
-            if (name, expr, 1.0, "exact_hash") not in candidates:
-                candidates.append((name, expr, score, "partial_hash"))
+        for name, expr, score, _method in partial_matches:
+            if not any(c[0] == name for c in candidates):
+                candidates.append((name, expr, score, "behavioral_match"))
         
         # Method 2: Type-based transfer
         # Find concepts of compatible type and try them
