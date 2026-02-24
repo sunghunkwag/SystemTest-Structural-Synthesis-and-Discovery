@@ -1,31 +1,20 @@
-# Neuro-Genetic Structural Synthesis
+# Neuro-Genetic Structural Synthesis and Autonomous Discovery
 
-## Project Status: Verified Experimental System
-This repository contains a **Neuro-Genetic Algorithm Discovery System**. It is designed to autonomously synthesize programs and discover mathematical concepts without human intervention.
+## Abstract
 
-**Latest Verified Achievement (2026-01-11):**
-*   **Self-Generated Complexity:** The system autonomously evolved a **4.6KB (4,630 bytes)** genetic code (`triangular_g1662`) to approximate the Triangular Number sequence.
-*   **Logic Depth:** Instead of hardcoded values, the generated code successfully utilized deeply nested control flows (`if_gt`, `div`, `mod`, `mul`) to construct a heuristic solution.
+This repository presents an experimental framework for **autonomous program synthesis** and **emergent mathematical concept discovery** via neuro-genetic evolution. The system operates without human-defined objectives, synthesizing executable programs and inferring novel computational goals through temporal inversion of observed input/output patterns.
 
-## Key Features (Fact-Based)
+## System Components
 
-### 1. Neuro-Genetic Synthesizer (Python)
-*   Implements a hybrid evolution strategy.
-*   **Capabilities:** Verified generation of valid Python-like ASTs from scratch.
-*   **Persistence:** Automatically saves evolved "brains" (genetic code) to disk (current count: 147+ checkpoints).
+| Module | Language | Role |
+|---|---|---|
+| `neuro_genetic_synthesizer.py` | Python | Hybrid evolutionary AST generation |
+| `self_purpose_engine.py` | Python | Autonomous goal induction via temporal inversion |
+| `concept_transfer.py` | Python | Cross-domain concept generalization |
+| `rs_machine/` | Rust (PyO3) | High-performance stack-based execution VM |
+| `autonomous_rsi_loop.py` | Python | Recursive self-improvement (RSI) orchestration |
 
-### 2. Rust Virtual Machine (Acceleration Layer)
-*   **Component:** `rs_machine`
-*   **Function:** A custom stack-based VM written in Rust using PyO3.
-*   **Status:** Fully integrated. The system detects the Rust binary and offloads execution for performance.
-*   **Fallback:** Gracefully degrades to a Python interpreter if the Rust binary is missing.
-
-### 3. Autonomous Goal Discovery (Self-Purpose Engine)
-*   **Method:** Temporal Inversion.
-*   **Process:** The system generates random expressions, analyzes their input/output patterns, and "inverts" them to define new problems to solve (e.g., discovering linear progressions or patterns).
-*   **Evidence:** Verified logs showing `EMERGENT PURPOSE: linear_d2` (Arithmetic Progression).
-
-## System Architecture
+## Architecture
 
 ```mermaid
 graph TD
@@ -34,34 +23,35 @@ graph TD
         Brain["Neuro-Genetic Synthesizer"]
         Purpose["SelfPurposeEngine"]
     end
-
-    subgraph "Execution (Rust)"
-        RustVM["rs_machine (JIT Compiler)"]
+    subgraph "Execution Layer (Rust)"
+        RustVM["rs_machine (PyO3 VM)"]
     end
-
-    Purpose -->|Define Goal| Orchestrator
+    Purpose -->|Induce Goal| Orchestrator
     Orchestrator -->|Evolve Solution| Brain
-    Brain -->|Compile & Run| RustVM
+    Brain -->|Compile & Evaluate| RustVM
     RustVM -->|Return Fitness| Brain
 ```
 
-## Installation & Usage
+## Empirical Results
 
-### Prerequisites
-*   Python 3.8+
-*   Rust Toolchain (for `rs_machine`)
-*   `maturin` (`pip install maturin`)
+- **Emergent Complexity (2026-01-11):** The system autonomously evolved a 4.6 KB genetic program (`triangular_g1662`) approximating the triangular number sequence \(T(n) = n(n+1)/2\) using deeply nested control-flow primitives (`if_gt`, `div`, `mod`, `mul`), without hardcoded target logic.
+- **Autonomous Goal Discovery:** Verified induction of arithmetic progressions from unlabeled expression outputs (`EMERGENT PURPOSE: linear_d2`).
+- **Persistence:** 147+ evolutionary checkpoints persisted to disk autonomously.
 
-### Build Rust Extension
-To enable the high-performance VM:
+## Installation
+
+**Prerequisites:** Python 3.8+, Rust toolchain, `maturin`
+
 ```bash
-cd rs_machine
-maturin develop --release
-cd ..
-```
+# Build Rust acceleration layer
+cd rs_machine && maturin develop --release && cd ..
 
-### Run System
-```bash
+# Run autonomous discovery loop
 python Systemtest.py hrm-life
 ```
-*Runs the infinite discovery loop. Verified to generate valid checkpoints and evolve fitness.*
+
+> The system gracefully degrades to a pure-Python interpreter if the Rust binary is unavailable.
+
+## Research Context
+
+This system constitutes a preliminary empirical investigation into **open-ended program synthesis** at the intersection of genetic programming, meta-learning, and recursive self-improvement (RSI). The `SelfPurposeEngine` implements a form of *intrinsic motivation* through inverse problem generation—enabling the system to define and pursue novel computational objectives without external reward signals.
